@@ -17,12 +17,16 @@ jobs:
 
     steps:
 
-      # 1. تحميل ملفات المشروع من GitHub
+      # ==========================================
+      # 1. تحميل المشروع من GitHub
+      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # 2. تثبيت Java
+      # ==========================================
+      # 2. تثبيت Java 17
+      # ==========================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -30,15 +34,175 @@ jobs:
           java-version: "17"
 
 
+      # ==========================================
       # 3. تثبيت Flutter
+      # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
 
-      # 4. عرض الملفات للتأكد
+      # ==========================================
+      # 4. عرض الملفات الموجودة
+      # ==========================================
       - name: Show repository files
         run: |
           echo "Repository files:"
-          find . -maxdepth 2 -type f | head -100
+          find . -maxdepth 3 -type f | head -200
+
+
+      # ==========================================
+      # 5. فك ضغط ملف المشروع ZIP تلقائياً
+      # ==========================================
+      - name: Extract Flutter project
+        run: |
+          echo "Searching for ZIP file..."
+
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -1)
+
+          if [ -n "$ZIP_FILE" ]; then
+            echo "ZIP file found: $ZIP_FILE"
+
+            mkdir -p extracted_project
+
+            unzip -q "$ZIP_FILE" -d extracted_project
+
+            echo "Extracted files:"
+            find extracted_project -maxdepth 3 -type f | head -100
+          else
+            echo "No ZIP file found."
+          fi
+
+
+      # ==========================================
+      # 6. البحث عن مجلد Flutter الذي يحتوي pubspec.yaml
+      # ==========================================
+      - name: Find Flutter project
+        id: flutter_project
+        run: |
+          PROJECT_DIR=$(find . -name pubspec.yaml -type f | head -1 | xargs dirname)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: pubspec.yaml not found!"
+            exit 1
+          fi
+
+          echo "Flutter project found at:"
+          echo "$PROJECT_DIR"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+
+      # ==========================================
+      # 7. عرض معلومات Flutter
+      # ==========================================
+      - name: Flutter version
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: |
+          flutter --version
+          dart --version
+
+
+      # ==========================================
+      # 8. تنزيل Dependencies
+      # ==========================================
+      - name: Get Flutter dependencies
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: |
+          flutter clean
+          flutter pub get
+
+
+      # ==========================================
+      # 9. فحص المشروع
+      # ==========================================
+      - name: Analyze Flutter project
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: |
+          flutter analyze || true
+
+
+      # ==========================================
+      # 10. بناء APK Release
+      # ==========================================
+      - name: Build Release APK
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: |
+          flutter build apk --release
+
+
+      # ==========================================
+      # 11. بناء Android App Bundle AAB
+      # ==========================================
+      - name: Build Release AAB
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: |
+          flutter build appbundle --release
+
+
+      # ==========================================
+      # 12. إنشاء مجلد النتائج
+      # ==========================================
+      - name: Prepare artifacts
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: |
+          mkdir -p release_files
+
+          APK_FILE=$(find build/app/outputs/flutter-apk -name "*release*.apk" | head -1)
+
+          AAB_FILE=$(find build/app/outputs/bundle/release -name "*.aab" | head -1)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK file not found!"
+            exit 1
+          fi
+
+          if [ -z "$AAB_FILE" ]; then
+            echo "ERROR: AAB file not found!"
+            exit 1
+          fi
+
+          cp "$APK_FILE" release_files/Rafiq-Al-Quran.apk
+
+          cp "$AAB_FILE" release_files/Rafiq-Al-Quran.aab
+
+          echo "Release files:"
+          ls -lh release_files
+
+
+      # ==========================================
+      # 13. رفع APK
+      # ==========================================
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rafiq-Al-Quran-APK
+          path: ${{ steps.flutter_project.outputs.project_dir }}/release_files/Rafiq-Al-Quran.apk
+          if-no-files-found: error
+          retention-days: 30
+
+
+      # ==========================================
+      # 14. رفع AAB
+      # ==========================================
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rafiq-Al-Quran-AAB
+          path: ${{ steps.flutter_project.outputs.project_dir }}/release_files/Rafiq-Al-Quran.aab
+          if-no-files-found: error
+          retention-days: 30
+
+
+      # ==========================================
+      # 15. رفع كل ملفات Release معاً
+      # ==========================================
+      - name: Upload Complete Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rafiq-Al-Quran-Complete-Release
+          path: ${{ steps.flutter_project.outputs.project_dir }}/release_files/
+          if-no-files-found: error
+          retention-days: 30
