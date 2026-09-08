@@ -23,19 +23,86 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
       # ==========================================
-      # 2. تثبيت Java 17
+      # 2. إعداد Java
       # ==========================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
+          java-version: '17'
+          cache: gradle
 
       # ==========================================
-      # 3. تثبيت Flutter
+      # 3. البحث عن ZIP وفك الضغط إن وجد
+      # ==========================================
+      - name: Extract Flutter project
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "Searching for Flutter project / ZIP..."
+          echo "======================================"
+
+          mkdir -p extracted
+
+          ZIP_FILE=$(find . \
+            -type f \
+            \( -name "*.zip" -o -name "*.ZIP" \) \
+            -not -path "./.git/*" \
+            | head -n 1 || true)
+
+          if [ -n "$ZIP_FILE" ]; then
+            echo "ZIP found: $ZIP_FILE"
+            echo "Extracting ZIP..."
+
+            unzip -q "$ZIP_FILE" -d extracted
+
+            echo "ZIP extracted successfully."
+          else
+            echo "No ZIP file found."
+            echo "Using repository files directly."
+          fi
+
+      # ==========================================
+      # 4. العثور على Flutter project
+      # ==========================================
+      - name: Find Flutter project
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for pubspec.yaml..."
+
+          PROJECT_DIR=$(find . \
+            -type f \
+            -name "pubspec.yaml" \
+            -not -path "./.git/*" \
+            | head -n 1 \
+            | xargs -r dirname)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo ""
+            echo "ERROR: pubspec.yaml was not found."
+            echo ""
+            echo "Make sure your Flutter project contains:"
+            echo "pubspec.yaml"
+            echo ""
+            echo "Repository files:"
+            find . -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+          PROJECT_DIR=$(realpath "$PROJECT_DIR")
+
+          echo "Flutter project found:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      # ==========================================
+      # 5. تثبيت Flutter
       # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -43,134 +110,117 @@ jobs:
           channel: stable
           cache: true
 
-
       # ==========================================
-      # 4. عرض الملفات الموجودة
-      # ==========================================
-      - name: Show repository files
-        run: |
-          echo "Repository files:"
-          find . -maxdepth 3 -type f | head -200
-
-
-      # ==========================================
-      # 5. فك ضغط ملف المشروع ZIP تلقائياً
-      # ==========================================
-      - name: Extract Flutter project
-        run: |
-          echo "Searching for ZIP file..."
-
-          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -1)
-
-          if [ -n "$ZIP_FILE" ]; then
-            echo "ZIP file found: $ZIP_FILE"
-
-            mkdir -p extracted_project
-
-            unzip -q "$ZIP_FILE" -d extracted_project
-
-            echo "Extracted files:"
-            find extracted_project -maxdepth 3 -type f | head -100
-          else
-            echo "No ZIP file found."
-          fi
-
-
-      # ==========================================
-      # 6. البحث عن مجلد Flutter الذي يحتوي pubspec.yaml
-      # ==========================================
-      - name: Find Flutter project
-        id: flutter_project
-        run: |
-          PROJECT_DIR=$(find . -name pubspec.yaml -type f | head -1 | xargs dirname)
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: pubspec.yaml not found!"
-            exit 1
-          fi
-
-          echo "Flutter project found at:"
-          echo "$PROJECT_DIR"
-
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-
-
-      # ==========================================
-      # 7. عرض معلومات Flutter
+      # 6. Flutter version
       # ==========================================
       - name: Flutter version
-        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
         run: |
           flutter --version
-          dart --version
-
 
       # ==========================================
-      # 8. تنزيل Dependencies
+      # 7. إصلاح صلاحيات Gradle
+      # ==========================================
+      - name: Prepare Gradle
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          if [ -f "android/gradlew" ]; then
+            chmod +x android/gradlew
+          fi
+
+          chmod +x "$GITHUB_WORKSPACE/$PROJECT_DIR/android/gradlew" 2>/dev/null || true
+
+      # ==========================================
+      # 8. تحميل Dependencies
       # ==========================================
       - name: Get Flutter dependencies
-        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
         run: |
-          flutter clean
+          set -e
+
+          cd "$PROJECT_DIR"
+
           flutter pub get
 
-
       # ==========================================
-      # 9. فحص المشروع
+      # 9. تحليل المشروع
       # ==========================================
       - name: Analyze Flutter project
-        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
         run: |
-          flutter analyze || true
+          set +e
 
+          cd "$PROJECT_DIR"
+
+          flutter analyze
+
+          ANALYZE_EXIT=$?
+
+          if [ $ANALYZE_EXIT -ne 0 ]; then
+            echo "Warning: flutter analyze reported issues."
+            echo "Continuing with Android build..."
+          fi
+
+          exit 0
 
       # ==========================================
       # 10. بناء APK Release
       # ==========================================
       - name: Build Release APK
-        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
         run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
           flutter build apk --release
 
-
       # ==========================================
-      # 11. بناء Android App Bundle AAB
+      # 11. بناء AAB Release
       # ==========================================
       - name: Build Release AAB
-        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
         run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
           flutter build appbundle --release
 
-
       # ==========================================
-      # 12. إنشاء مجلد النتائج
+      # 12. تجهيز ملفات الإصدار
       # ==========================================
       - name: Prepare artifacts
-        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        shell: bash
         run: |
-          mkdir -p release_files
+          set -e
 
-          APK_FILE=$(find build/app/outputs/flutter-apk -name "*release*.apk" | head -1)
+          mkdir -p "$GITHUB_WORKSPACE/release"
 
-          AAB_FILE=$(find build/app/outputs/bundle/release -name "*.aab" | head -1)
+          APK_FILE="$PROJECT_DIR/build/app/outputs/flutter-apk/app-release.apk"
+          AAB_FILE="$PROJECT_DIR/build/app/outputs/bundle/release/app-release.aab"
 
-          if [ -z "$APK_FILE" ]; then
-            echo "ERROR: APK file not found!"
+          if [ -f "$APK_FILE" ]; then
+            cp "$APK_FILE" \
+              "$GITHUB_WORKSPACE/release/Rafiq-Al-Quran-release.apk"
+          else
+            echo "ERROR: APK file not found."
             exit 1
           fi
 
-          if [ -z "$AAB_FILE" ]; then
-            echo "ERROR: AAB file not found!"
+          if [ -f "$AAB_FILE" ]; then
+            cp "$AAB_FILE" \
+              "$GITHUB_WORKSPACE/release/Rafiq-Al-Quran-release.aab"
+          else
+            echo "ERROR: AAB file not found."
             exit 1
           fi
 
-          cp "$APK_FILE" release_files/Rafiq-Al-Quran.apk
-
-          cp "$AAB_FILE" release_files/Rafiq-Al-Quran.aab
-
+          echo ""
+          echo "======================================"
           echo "Release files:"
-          ls -lh release_files
+          echo "======================================"
 
+          ls -lh "$GITHUB_WORKSPACE/release"
 
       # ==========================================
       # 13. رفع APK
@@ -179,10 +229,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Rafiq-Al-Quran-APK
-          path: ${{ steps.flutter_project.outputs.project_dir }}/release_files/Rafiq-Al-Quran.apk
+          path: release/Rafiq-Al-Quran-release.apk
           if-no-files-found: error
-          retention-days: 30
-
 
       # ==========================================
       # 14. رفع AAB
@@ -191,18 +239,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Rafiq-Al-Quran-AAB
-          path: ${{ steps.flutter_project.outputs.project_dir }}/release_files/Rafiq-Al-Quran.aab
+          path: release/Rafiq-Al-Quran-release.aab
           if-no-files-found: error
-          retention-days: 30
-
 
       # ==========================================
-      # 15. رفع كل ملفات Release معاً
+      # 15. رفع الإصدار كاملًا
       # ==========================================
       - name: Upload Complete Release
         uses: actions/upload-artifact@v4
         with:
           name: Rafiq-Al-Quran-Complete-Release
-          path: ${{ steps.flutter_project.outputs.project_dir }}/release_files/
+          path: release/
           if-no-files-found: error
-          retention-days: 30
